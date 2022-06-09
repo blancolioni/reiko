@@ -9,7 +9,9 @@ with Ada.Unchecked_Deallocation;
 
 package body Reiko.Tasks is
 
-   task type Update_Task;
+   task type Update_Task is
+      entry Stopped;
+   end Update_Task;
 
    package Update_Holders is
      new Ada.Containers.Indefinite_Holders
@@ -35,10 +37,14 @@ package body Reiko.Tasks is
 
    protected Ready_Updates is
       procedure Add_Ready_Updates (List : Update_Lists.List);
-      entry Next_Ready_Update (Holder : out Update_Holders.Holder);
+      entry Next_Ready_Update
+        (Holder : out Update_Holders.Holder;
+         Stop   : out Boolean);
       entry Wait_Empty;
+      procedure Stop;
    private
-      Ready_List : Update_Holder_Lists.List;
+      Ready_List    : Update_Holder_Lists.List;
+      Stop_Signaled : Boolean := False;
    end Ready_Updates;
 
    type Update_Task_Access is access Update_Task;
@@ -69,13 +75,29 @@ package body Reiko.Tasks is
       -- Next_Ready_Update --
       -----------------------
 
-      entry Next_Ready_Update (Holder : out Update_Holders.Holder)
-        when not Ready_List.Is_Empty
+      entry Next_Ready_Update
+        (Holder : out Update_Holders.Holder;
+         Stop   : out Boolean)
+        when not Ready_List.Is_Empty or else Stop_Signaled
       is
       begin
-         Holder := Ready_List.First_Element;
-         Ready_List.Delete_First;
+         if Stop_Signaled then
+            Stop := True;
+            Holder := Update_Holders.Empty_Holder;
+         else
+            Holder := Ready_List.First_Element;
+            Ready_List.Delete_First;
+         end if;
       end Next_Ready_Update;
+
+      ----------
+      -- Stop --
+      ----------
+
+      procedure Stop is
+      begin
+         Stop_Signaled := True;
+      end Stop;
 
       ----------------
       -- Wait_Empty --
@@ -102,6 +124,31 @@ package body Reiko.Tasks is
       Next_Update   : Ada.Calendar.Time := Ada.Calendar.Clock;
 
       procedure Set_Next_Update_Time;
+
+      function Calculate_Clock return Reiko_Time;
+
+      ---------------------
+      -- Calculate_Clock --
+      ---------------------
+
+      function Calculate_Clock return Reiko_Time is
+      begin
+         if Running then
+            declare
+               use type Ada.Calendar.Time;
+               Elapsed : constant Reiko_Duration :=
+                           Reiko_Duration
+                             (Ada.Calendar.Clock - Last_Update)
+                             * Current_Accel;
+               New_Clock : constant Reiko_Time :=
+                             Current_Clock + Reiko_Time (Elapsed);
+            begin
+               return New_Clock;
+            end;
+         else
+            return Current_Clock;
+         end if;
+      end Calculate_Clock;
 
       --------------------------
       -- Set_Next_Update_Time --
@@ -147,9 +194,11 @@ package body Reiko.Tasks is
             accept Resume do
                Last_Update := Ada.Calendar.Clock;
                Running := True;
+               Set_Next_Update_Time;
             end Resume;
          or
             accept Pause do
+               Current_Clock := Calculate_Clock;
                Running := False;
             end Pause;
          or
@@ -165,7 +214,7 @@ package body Reiko.Tasks is
                                Paused : out Boolean;
                                Advance_Per_Second : out Reiko_Duration)
             do
-               Current_Time := Current_Clock;
+               Current_Time := Calculate_Clock;
                Paused := not Running;
                Advance_Per_Second := Current_Accel;
             end Get_Status;
@@ -219,6 +268,7 @@ package body Reiko.Tasks is
 
          end select;
       end loop;
+
    end Update_Manager;
 
    -----------------
@@ -229,8 +279,11 @@ package body Reiko.Tasks is
       Holder : Update_Holders.Holder;
    begin
       loop
+         declare
+            Stopped : Boolean;
          begin
-            Ready_Updates.Next_Ready_Update (Holder);
+            Ready_Updates.Next_Ready_Update (Holder, Stopped);
+            exit when Stopped;
             Holder.Constant_Reference.Execute;
          exception
             when E : others =>
@@ -242,6 +295,7 @@ package body Reiko.Tasks is
                   & Ada.Exceptions.Exception_Message (E));
          end;
       end loop;
+      accept Stopped;
    end Update_Task;
 
    -----------------------
@@ -306,11 +360,12 @@ package body Reiko.Tasks is
       procedure Free is
         new Ada.Unchecked_Deallocation (Update_Task, Update_Task_Access);
    begin
-      Update_Manager.Stop;
+      Ready_Updates.Stop;
       for Updater of Update_Tasks loop
-         abort Updater.all;
+         Updater.Stopped;
          Free (Updater);
       end loop;
+      Update_Manager.Stop;
    end Stop;
 
 end Reiko.Tasks;

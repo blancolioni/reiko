@@ -13,6 +13,8 @@ package Reiko is
 
    procedure Execute (Update : Root_Update_Type) is abstract;
 
+   function Update_Time (Update : Root_Update_Type) return Reiko_Time;
+
 private
 
    type Root_Update_Type is abstract tagged
@@ -21,5 +23,8 @@ private
       end record;
 
    pragma Import (Intrinsic, "+");
+
+   function Update_Time (Update : Root_Update_Type) return Reiko_Time
+   is (Update.Time_Stamp);
 
 end Reiko;
